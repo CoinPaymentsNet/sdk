@@ -1,0 +1,95 @@
+name: Create Release on Version Update
+
+# Reads version.json (produced by the SDK generator), and if that version
+# does not yet have a GitHub release, builds a tarball per language and
+# attaches all three as assets on a single release.
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+
+env:
+  PROJECT_NAME: coinpayments-sdk
+  LANGUAGES: "python javascript php"
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # required to create releases + upload assets
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # version.json is written by the generator; single source of truth.
+    - name: Read version from version.json
+      id: read_version
+      run: |
+        version=$(jq -r .version version.json)
+        if [ -z "$version" ] || [ "$version" = "null" ]; then
+          echo "::error::version.json missing .version"; exit 1
+        fi
+        echo "Detected version: $version"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    # Idempotent: if the tag already has a release, nothing else runs.
+    - name: Check if release already exists
+      id: release_check
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        tag="${{ steps.read_version.outputs.version }}"
+        if gh release view "$tag" >/dev/null 2>&1; then
+          echo "Release $tag already exists - skipping."
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "Release $tag does not exist - will publish."
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Capture previous release tag (for changelog link)
+      id: prev_release
+      if: steps.release_check.outputs.exists == 'false'
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        prev=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
+        echo "previous=$prev" >> "$GITHUB_OUTPUT"
+
+    - name: Build per-language release assets
+      if: steps.release_check.outputs.exists == 'false'
+      run: |
+        v="${{ steps.read_version.outputs.version }}"
+        mkdir -p release
+        for lang in $LANGUAGES; do
+          if [ ! -d "$lang" ]; then
+            echo "skip: $lang/ not present"
+            continue
+          fi
+          out="release/${PROJECT_NAME}-${lang}-${v}.tar.gz"
+          tar -czf "$out" "$lang"
+          echo "-> $out"
+        done
+
+    - name: Create GitHub Release
+      if: steps.release_check.outputs.exists == 'false'
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        v="${{ steps.read_version.outputs.version }}"
+        prev="${{ steps.prev_release.outputs.previous }}"
+        repo="${{ github.repository }}"
+        if [ -n "$prev" ]; then
+          changelog="**Full Changelog**: https://github.com/$repo/compare/${prev}...${v}"
+        else
+          changelog="Initial release."
+        fi
+        printf 'Per-language SDK assets for v%s.\n\n%s\n' "$v" "$changelog" > release-notes.md
+        gh release create "$v" \
+          --title "Release v$v" \
+          --notes-file release-notes.md \
+          release/*.tar.gz
