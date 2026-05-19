@@ -1,0 +1,16 @@
+{
+  "name": "@coinpayments/sdk",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
